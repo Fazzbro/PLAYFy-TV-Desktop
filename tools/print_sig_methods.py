@@ -1,0 +1,19 @@
+with open(r'apk_extracted\lib\x86_64\libumairi-lib.so', 'rb') as f:
+    data = f.read()
+
+# 0x69f47: lea rdx, [rip - 0x58d92] -> rip is 0x69f4e -> 0x69f4e - 0x58d92 = 0x111bc
+# 0x69f4e: lea rcx, [rip - 0x58b18] -> rip is 0x69f55 -> 0x69f55 - 0x58b18 = 0x1143d
+# and 0x69ef7: lea rdx, [rip - 0x5928f] -> rip is 0x69efe -> 0x69efe - 0x5928f = 0x10c6f
+# 0x69efe: lea rcx, [rip - 0x58677] -> rip is 0x69f05 -> 0x69f05 - 0x58677 = 0x1188e
+
+offsets = [
+    0x69f4e - 0x58d92,
+    0x69f55 - 0x58b18,
+    0x69efe - 0x5928f,
+    0x69f05 - 0x58677
+]
+
+for off in offsets:
+    end = data.find(b'\x00', off)
+    s = data[off:end]
+    print(f"Offset 0x{off:x}: {s}")

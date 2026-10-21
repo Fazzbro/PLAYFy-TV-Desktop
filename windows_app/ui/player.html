@@ -1,0 +1,59 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <script src="shaka-player.compiled.js"></script>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+        video { width: 100%; height: 100%; object-fit: contain; }
+    </style>
+</head>
+<body>
+    <video id="video" autoplay controls></video>
+    <script>
+        async function init() {
+            shaka.polyfill.installAll();
+            if (!shaka.Player.isBrowserSupported()) {
+                document.title = "ERROR:BrowserNotSupported";
+                return;
+            }
+            const video = document.getElementById('video');
+            const player = new shaka.Player(video);
+
+            player.addEventListener('error', (e) => {
+                console.error('Shaka Error:', e.detail);
+                document.title = "ERROR:" + e.detail.code;
+            });
+
+            video.addEventListener('playing', () => {
+                document.title = "STATUS:PLAYING";
+            });
+
+            player.configure({
+                drm: {
+                    clearKeys: {
+                        'd1a163914db8ffad2c3e94f979896a0d': '9728800a3959aafdd5b0bcfbf3768811'
+                    }
+                },
+                streaming: {
+                    bufferingGoal: 5,
+                    rebufferingGoal: 2
+                }
+            });
+
+            player.getNetworkingEngine().registerRequestFilter((type, request) => {
+                request.headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36';
+            });
+
+            try {
+                await player.load('https://otte.cache.aiv-cdn.net/bom-nitro/live/clients/dash/enc/vkpoljjpkj/out/v1/502bcf68b3514cd28a220e6f0a43816f/cenc.mpd');
+                document.title = "STATUS:LOADED";
+            } catch (e) {
+                document.title = "LOAD_ERROR:" + e.code;
+            }
+        }
+        init();
+    </script>
+</body>
+</html>
