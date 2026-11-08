@@ -651,6 +651,44 @@ def stream_proxy(url: str, request: Request):
 
 
 # ---------------------------------------------------------------------------
+# Native Desktop Window Control (Fullscreen & Shell Sync)
+# ---------------------------------------------------------------------------
+
+DESKTOP_WINDOW = None
+
+@app.get("/api/window/fullscreen")
+def get_fullscreen_status():
+    if DESKTOP_WINDOW is not None:
+        try:
+            return {"fullscreen": bool(DESKTOP_WINDOW.fullscreen)}
+        except Exception:
+            pass
+    return {"fullscreen": False}
+
+@app.post("/api/window/fullscreen")
+async def set_fullscreen_status(request: Request):
+    target = None
+    try:
+        body = await request.json()
+        target = body.get("state")
+    except Exception:
+        pass
+
+    if DESKTOP_WINDOW is not None:
+        try:
+            current = bool(DESKTOP_WINDOW.fullscreen)
+            if target is None:
+                DESKTOP_WINDOW.toggle_fullscreen()
+            elif bool(target) != current:
+                DESKTOP_WINDOW.toggle_fullscreen()
+            return {"success": True, "fullscreen": bool(DESKTOP_WINDOW.fullscreen)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    return {"success": False, "error": "No desktop shell window attached"}
+
+
+
+# ---------------------------------------------------------------------------
 # Serve Production React Frontend
 # ---------------------------------------------------------------------------
 
