@@ -154,9 +154,15 @@ To compile the standalone Windows `.exe` without requiring Python to be installe
    ```cmd
    pyinstaller PLAYFy-TV-Desktop.spec --noconfirm
    ```
+   The compiled standalone binaries and runtime assets are generated in:
+   `dist\PLAYFy-TV\PLAYFy-TV.exe`
 
-The compiled standalone executable and runtime assets are generated in:
-`dist\PLAYFy-TV\PLAYFy-TV.exe`
+3. Build the Windows Setup Installer with Inno Setup:
+   ```cmd
+   iscc installer.iss
+   ```
+   The compressed single-file setup wizard is generated in:
+   `dist\installer\PLAYFy-TV-Setup-v1.7.0.exe`
 
 ---
 
