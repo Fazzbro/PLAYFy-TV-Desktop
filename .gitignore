@@ -4,8 +4,8 @@ __pycache__/
 *$py.class
 
 # PyInstaller distribution and build outputs
-build/
-dist/
+/build/
+/dist/
 *.manifest
 *.spec.bak
 

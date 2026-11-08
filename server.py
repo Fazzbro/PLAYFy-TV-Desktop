@@ -491,22 +491,42 @@ def get_channel_streams(channel_id: str):
         title_lower = s.get("title", "").lower()
         quality = "FHD" if "fhd" in title_lower or "1080" in title_lower else ("HD" if "hd" in title_lower or "720" in title_lower else "SD")
 
-        # Proxy URL for streams that require specific Referer/User-Agent headers
-        proxy_url = f"/api/proxy?url={urllib.parse.quote(raw_url)}" if headers else raw_url
+        # Determine if proxy is needed:
+        # Standard User-Agent alone does NOT require proxying because the desktop browser already sends a valid User-Agent.
+        # Direct CDN links (e.g. Amazon CloudFront, Akamai) allow direct CORS playback and fast streaming.
+        # Proxy is only needed if custom Referer, Origin, or non-standard auth headers exist.
+        needs_proxy = False
+        ref_header = None
+        origin_header = None
+        if headers:
+            for hk, hv in headers.items():
+                if hk.lower() in ("referer", "origin"):
+                    needs_proxy = True
+                    if hk.lower() == "referer":
+                        ref_header = hv
+                    if hk.lower() == "origin":
+                        origin_header = hv
+
+        proxy_params = f"url={urllib.parse.quote(raw_url)}"
+        if ref_header:
+            proxy_params += f"&ref={urllib.parse.quote(ref_header)}"
+        if origin_header:
+            proxy_params += f"&origin={urllib.parse.quote(origin_header)}"
+        proxy_url = f"/api/proxy?{proxy_params}"
 
         parsed_servers.append({
             "id": f"{channel_id}_{idx}",
             "server_index": idx,
             "title": s.get("title"),
             "link": raw_url,
-            "proxy_link": proxy_url,
+            "proxy_link": proxy_url if needs_proxy else None,
             "quality": quality,
             "is_hls": is_hls,
             "is_dash": is_dash,
             "has_drm": has_clearkey,
             "clearkey": clearkeys,
             "headers": headers,
-            "direct_playable": is_hls or has_clearkey
+            "direct_playable": True
         })
 
     # Preserve exact original server broadcast order matching the APK's formats list
@@ -536,13 +556,22 @@ async def capture_stream(request: Request):
 def stream_proxy(url: str, request: Request):
     """
     CORS-bypassing streaming proxy for feeds requiring specific Referer or User-Agent headers.
+    Automatically handles relative segment resolution for DASH (MPD) and HLS (M3U8).
     """
     if not url:
         raise HTTPException(status_code=400, detail="Missing 'url' parameter.")
 
     req_headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
     }
+    # Forward Referer and Origin if passed in query parameters
+    ref = request.query_params.get("ref")
+    if ref:
+        req_headers["Referer"] = ref
+    origin = request.query_params.get("origin")
+    if origin:
+        req_headers["Origin"] = origin
+
     # Forward range headers for video seek
     if "range" in request.headers:
         req_headers["Range"] = request.headers["range"]
@@ -550,7 +579,57 @@ def stream_proxy(url: str, request: Request):
     try:
         req = urllib.request.Request(url, headers=req_headers)
         resp = urllib.request.urlopen(req, timeout=12)
+        content_type = resp.headers.get("Content-Type", "")
 
+        # 1. For DASH MPD manifests: inject BaseURL so relative segment templates resolve correctly to remote CDN
+        if ".mpd" in url.lower() or "dash+xml" in content_type:
+            raw_text = resp.read().decode('utf-8', errors='replace')
+            if "<BaseURL>" not in raw_text and "<BaseURL " not in raw_text:
+                base_folder = url.rsplit('/', 1)[0] + '/'
+                pattern = re.compile(r'(<MPD\b[^>]*>)', re.IGNORECASE)
+                raw_text = pattern.sub(r'\1\n  <BaseURL>' + base_folder + r'</BaseURL>', raw_text, count=1)
+            mpd_bytes = raw_text.encode('utf-8')
+            resp_headers = {
+                "Content-Type": "application/dash+xml",
+                "Content-Length": str(len(mpd_bytes)),
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, OPTIONS",
+                "Cache-Control": "no-cache"
+            }
+            return Response(content=mpd_bytes, status_code=200, headers=resp_headers)
+
+        # 2. For HLS M3U8 playlists: rewrite relative segments to absolute URLs
+        if ".m3u8" in url.lower() or "mpegurl" in content_type.lower():
+            raw_text = resp.read().decode('utf-8', errors='replace')
+            lines = raw_text.splitlines()
+            rewritten = []
+            for line in lines:
+                sline = line.strip()
+                if not sline:
+                    rewritten.append(line)
+                elif sline.startswith('#'):
+                    def repl_uri(m):
+                        sub_uri = m.group(1)
+                        if not sub_uri.startswith('http'):
+                            sub_uri = urllib.parse.urljoin(url, sub_uri)
+                        return f'URI="{sub_uri}"'
+                    line = re.sub(r'URI=["\']([^"\']+)["\']', repl_uri, line)
+                    rewritten.append(line)
+                elif not sline.startswith('http'):
+                    rewritten.append(urllib.parse.urljoin(url, sline))
+                else:
+                    rewritten.append(line)
+            m3u8_bytes = "\n".join(rewritten).encode('utf-8')
+            resp_headers = {
+                "Content-Type": "application/vnd.apple.mpegurl",
+                "Content-Length": str(len(m3u8_bytes)),
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, OPTIONS",
+                "Cache-Control": "no-cache"
+            }
+            return Response(content=m3u8_bytes, status_code=200, headers=resp_headers)
+
+        # 3. For video chunks, ts files, and initialization segments: stream chunks
         def iter_chunks():
             while True:
                 chunk = resp.read(64 * 1024)

@@ -187,7 +187,15 @@ export function VideoPlayer({ title, subtitle, servers, onClose }: VideoPlayerPr
     setIsQualityMenuOpen(false);
 
     const video = videoRef.current;
-    const streamUrl = activeServer.proxy_link || activeServer.link;
+    // Prefer direct link first for high speed and direct CDN chunk resolution.
+    // Fall back to proxy if direct playback fails or if custom headers require it.
+    const currentUrl: string = activeServer.link || activeServer.proxy_link || '';
+    if (!currentUrl) {
+      setErrorMsg('No valid stream address found for this server. Please select another server.');
+      setIsLoading(false);
+      return;
+    }
+    const backupUrl: string | null = activeServer.proxy_link && activeServer.proxy_link !== currentUrl ? activeServer.proxy_link : null;
 
     // Cleanup previous player instances
     if (hlsInstanceRef.current) {
@@ -199,10 +207,10 @@ export function VideoPlayer({ title, subtitle, servers, onClose }: VideoPlayerPr
       shakaPlayerRef.current = null;
     }
 
-    const isDash = activeServer.is_dash || streamUrl.includes('.mpd');
-    const isHls = activeServer.is_hls || streamUrl.includes('.m3u8');
+    const isDash = activeServer.is_dash || currentUrl.includes('.mpd');
+    const isHls = activeServer.is_hls || currentUrl.includes('.m3u8');
 
-    // Scenario A: MPEG-DASH with ClearKey DRM (e.g. FC Juárez, Willow, FanCode FHD)
+    // Scenario A: MPEG-DASH with ClearKey DRM (e.g. TNT Sports, FC Juárez, Willow, FanCode FHD)
     if (isDash || activeServer.has_drm) {
       try {
         shaka.polyfill.installAll();
@@ -219,13 +227,32 @@ export function VideoPlayer({ title, subtitle, servers, onClose }: VideoPlayerPr
             });
           }
 
+          let hasAttemptedFallback = false;
+
+          const handleShakaError = (code?: number, msg?: string) => {
+            if (backupUrl && !hasAttemptedFallback) {
+              hasAttemptedFallback = true;
+              console.log('Direct DASH playback failed, attempting proxy fallback:', backupUrl);
+              player.load(backupUrl).then(() => {
+                setIsLoading(false);
+                video.play().catch(() => setIsPlaying(false));
+              }).catch((e: any) => {
+                console.error('Proxy fallback also failed:', e);
+                setErrorMsg(`Playback error: Shaka Error ${e.code || code || '1001'}. Try another server.`);
+                setIsLoading(false);
+              });
+              return;
+            }
+            setErrorMsg(`Playback error: Shaka Error ${code || '1001'}. Try another server.`);
+            setIsLoading(false);
+          };
+
           player.addEventListener('error', (event: any) => {
             console.warn('Shaka Player Error:', event.detail);
-            setErrorMsg(`Playback error: ${event.detail?.message || 'Failed to load DASH stream'}. Try another server.`);
-            setIsLoading(false);
+            handleShakaError(event.detail?.code, event.detail?.message);
           });
 
-          player.load(streamUrl).then(() => {
+          player.load(currentUrl).then(() => {
             setIsLoading(false);
             video.play().catch(() => setIsPlaying(false));
 
@@ -267,8 +294,7 @@ export function VideoPlayer({ title, subtitle, servers, onClose }: VideoPlayerPr
             }
           }).catch((err: any) => {
             console.error('Shaka Load Error:', err);
-            setErrorMsg(`DASH stream could not be loaded (${err.message || 'Network error'}).`);
-            setIsLoading(false);
+            handleShakaError(err.code, err.message);
           });
           return;
         }
@@ -286,7 +312,9 @@ export function VideoPlayer({ title, subtitle, servers, onClose }: VideoPlayerPr
       });
       hlsInstanceRef.current = hls;
 
-      hls.loadSource(streamUrl);
+      let hasAttemptedHlsFallback = false;
+
+      hls.loadSource(currentUrl);
       hls.attachMedia(video);
 
       hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
@@ -320,6 +348,13 @@ export function VideoPlayer({ title, subtitle, servers, onClose }: VideoPlayerPr
         if (data.fatal) {
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
+              if (backupUrl && !hasAttemptedHlsFallback) {
+                hasAttemptedHlsFallback = true;
+                console.log('HLS direct network error, falling back to proxy:', backupUrl);
+                hls.loadSource(backupUrl);
+                hls.startLoad();
+                return;
+              }
               hls.startLoad();
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
@@ -338,12 +373,16 @@ export function VideoPlayer({ title, subtitle, servers, onClose }: VideoPlayerPr
 
     // Scenario C: Native browser HLS (Safari/iOS/Edge direct)
     if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = streamUrl;
+      video.src = currentUrl;
       video.addEventListener('loadedmetadata', () => {
         setIsLoading(false);
         video.play().catch(() => setIsPlaying(false));
       });
       video.addEventListener('error', () => {
+        if (backupUrl) {
+          video.src = backupUrl;
+          return;
+        }
         setErrorMsg('Native player encountered a playback fault. Click an alternate server.');
         setIsLoading(false);
       });
@@ -351,7 +390,7 @@ export function VideoPlayer({ title, subtitle, servers, onClose }: VideoPlayerPr
     }
 
     // Fallback: direct src
-    video.src = streamUrl;
+    video.src = currentUrl;
     setIsLoading(false);
   }, [activeServerIdx, activeServer]);
 
